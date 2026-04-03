@@ -2,14 +2,20 @@ import os
 import glob
 import cv2
 import time
-import math
 import serial
-from typing import Any, List, Optional, Tuple
+from typing import Optional
 
 from ultralytics import YOLO
 
+from follow_policy import (
+    FollowState,
+    follow_config_from_env,
+    follow_control_step,
+    select_person_box,
+)
+
 # =========================
-# CONFIG
+# CONFIG (YOLO / camera / serial only; follow tuning via follow_policy / env)
 # =========================
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _DEFAULT_SERIAL_BY_ID = (
@@ -51,7 +57,7 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return v.strip().lower() in ("1", "true", "yes", "on")
 
 
-def _parse_classes_filter() -> Optional[List[int]]:
+def _parse_classes_filter():
     raw = os.getenv("ROBOT_YOLO_CLASSES", "0")
     if raw is None or not str(raw).strip():
         return None
@@ -68,27 +74,11 @@ SERIAL_PORT = resolve_robot_serial_port()
 MODEL_PATH = resolve_yolo_model_path()
 BAUD = int(os.getenv("ROBOT_BAUD_RATE", "115200"))
 
-TARGET_CLASS = "person"
-
 FRAME_W = 640
 FRAME_H = 480
 
-FORWARD_SPEED = 150
-TURN_SPEED_MIN = 115
-TURN_SPEED_MAX = 200
-
-CENTER_TOLERANCE = 0.05
-STOP_AREA_RATIO = 0.35
-MIN_CONFIDENCE = float(os.getenv("MIN_CONFIDENCE", "0.4"))
-
 LOOP_DELAY = float(os.getenv("LOOP_DELAY", "0"))
 TARGET_LOOP_HZ = float(os.getenv("TARGET_LOOP_HZ", "0"))
-
-LOST_FRAMES_BEFORE_SEARCH = int(os.getenv("LOST_FRAMES_BEFORE_SEARCH", "20"))
-SEARCH_TURN_DURATION = float(os.getenv("SEARCH_TURN_DURATION", "0.25"))
-SEARCH_ALTERNATE_EVERY = int(os.getenv("SEARCH_ALTERNATE_EVERY", "3"))
-
-SMOOTH_ALPHA = float(os.getenv("X_DEV_SMOOTH_ALPHA", "0.35"))
 
 ROBOT_YOLO_IMGSZ = int(os.getenv("ROBOT_YOLO_IMGSZ", "320"))
 ROBOT_YOLO_DEVICE = os.getenv("ROBOT_YOLO_DEVICE", "").strip() or None
@@ -97,6 +87,7 @@ ROBOT_YOLO_CLASSES = _parse_classes_filter()
 USE_TRACKER = _env_bool("ROBOT_USE_TRACKER", True)
 TRACKER_CFG = os.getenv("ROBOT_TRACKER", "bytetrack.yaml").strip() or "bytetrack.yaml"
 YOLO_EVERY_N = max(1, int(os.getenv("YOLO_EVERY_N", "1")))
+MIN_CONFIDENCE = float(os.getenv("MIN_CONFIDENCE", "0.4"))
 LOG_INFER_MS = _env_bool("LOG_INFER_MS", False)
 LOG_INFER_EVERY = max(1, int(os.getenv("LOG_INFER_EVERY", "30")))
 
@@ -106,7 +97,7 @@ CAMERA_GRAB_FLUSH = max(0, int(os.getenv("CAMERA_GRAB_FLUSH", "1")))
 
 ROBOT_CMD_MIN_REPEAT_MS = float(os.getenv("ROBOT_CMD_MIN_REPEAT_MS", "0"))
 
-TURN_PULSE_SEC = float(os.getenv("TURN_PULSE_SEC", "0"))
+_follow_cfg = follow_config_from_env()
 
 
 def build_yolo_kwargs() -> dict:
@@ -125,95 +116,6 @@ def build_yolo_kwargs() -> dict:
 
 
 YOLO_KWARGS = build_yolo_kwargs()
-
-
-def box_center_xyxy(box: Any) -> Tuple[float, float]:
-    if hasattr(box, "cpu"):
-        box = box.cpu().numpy()
-    x1, y1, x2, y2 = float(box[0]), float(box[1]), float(box[2]), float(box[3])
-    return (x1 + x2) * 0.5, (y1 + y2) * 0.5
-
-
-def xyxy_to_int(box: Any) -> Tuple[int, int, int, int]:
-    if hasattr(box, "cpu"):
-        box = box.cpu().numpy()
-    flat = box.reshape(-1) if hasattr(box, "reshape") else box
-    x1, y1, x2, y2 = (int(float(flat[i])) for i in range(4))
-    return x1, y1, x2, y2
-
-
-def dist2(a: Tuple[float, float], b: Tuple[float, float]) -> float:
-    dx = a[0] - b[0]
-    dy = a[1] - b[1]
-    return dx * dx + dy * dy
-
-
-def select_person_box(
-    results,
-    model_names,
-    prev_track_id: Optional[int],
-    prev_center: Optional[Tuple[float, float]],
-):
-    """
-    Prefer previous track id, else closest box center to prev_center, else highest conf.
-    Returns (box, conf, center_xy, track_id_or_none).
-    """
-    candidates: List[Tuple[Any, float, Optional[int]]] = []
-    for r in results:
-        if r.boxes is None or len(r.boxes) == 0:
-            continue
-        boxes = r.boxes
-        xyxy = boxes.xyxy
-        confs = boxes.conf
-        clss = boxes.cls
-        tid_tensor = getattr(boxes, "id", None)
-        if tid_tensor is not None:
-            tids = tid_tensor.cpu().numpy().astype(int).tolist()
-        else:
-            tids = [None] * len(boxes)
-        for i in range(len(boxes)):
-            c = float(confs[i])
-            ci = int(clss[i])
-            label = model_names[ci]
-            if label != TARGET_CLASS or c < MIN_CONFIDENCE:
-                continue
-            box = xyxy[i]
-            tid = tids[i] if i < len(tids) else None
-            candidates.append((box, c, tid))
-
-    if not candidates:
-        return None, None, None, None
-
-    if prev_track_id is not None:
-        for box, c, tid in candidates:
-            if tid is not None and int(tid) == int(prev_track_id):
-                cx, cy = box_center_xyxy(box)
-                return box, float(c), (cx, cy), int(tid)
-
-    if prev_center is not None:
-        best_box, best_c, best_tid = None, -1.0, None
-        best_d = math.inf
-        for box, c, tid in candidates:
-            cx, cy = box_center_xyxy(box)
-            d = dist2((cx, cy), prev_center)
-            if d < best_d:
-                best_d = d
-                best_box, best_c, best_tid = box, c, tid
-        if best_box is not None:
-            cx, cy = box_center_xyxy(best_box)
-            tid_i = int(best_tid) if best_tid is not None else None
-            return best_box, float(best_c), (cx, cy), tid_i
-
-    best_box, best_c, best_tid = None, -1.0, None
-    for box, c, tid in candidates:
-        if c > best_c:
-            best_c = c
-            best_box = box
-            best_tid = tid
-    cx, cy = box_center_xyxy(best_box)
-    tid_i = int(best_tid) if best_tid is not None else None
-    return best_box, float(best_c), (cx, cy), tid_i
-
 
 # =========================
 # SERIAL
@@ -290,20 +192,8 @@ def grab_frame():
 # =========================
 # MAIN LOOP
 # =========================
-status_text = "SEARCHING"
-lost_frames = 0
-search_phase = 0
-x_dev_smooth = 0.0
-prev_track_id: Optional[int] = None
-prev_center: Optional[Tuple[float, float]] = None
-
-search_active_until = 0.0
-search_current_cmd: Optional[str] = None
-
-frame_idx = 0
+state = FollowState()
 infer_count = 0
-last_stale_box: Optional[Any] = None
-last_stale_conf = 0.0
 
 while True:
     loop_t0 = time.perf_counter()
@@ -312,105 +202,78 @@ while True:
         break
 
     fh, fw = frame.shape[0], frame.shape[1]
-    frame_area = float(fw * fh)
 
-    frame_idx += 1
-    run_infer = (frame_idx % YOLO_EVERY_N == 0)
+    state.frame_idx += 1
+    run_infer = (state.frame_idx % YOLO_EVERY_N == 0)
     infer_ms = 0.0
 
     if run_infer:
         results, infer_ms = run_vision(frame, USE_TRACKER and not _tracker_failed)
         infer_count += 1
         best_box, best_conf, _ctr_pick, tid_pick = select_person_box(
-            results, model.names, prev_track_id, prev_center
+            results,
+            model.names,
+            _follow_cfg,
+            state.prev_track_id,
+            state.prev_center,
         )
         if best_box is not None:
-            last_stale_box = best_box
-            last_stale_conf = best_conf
+            state.last_stale_box = best_box
+            state.last_stale_conf = float(best_conf or 0.0)
         else:
-            last_stale_box = None
-            last_stale_conf = 0.0
+            state.last_stale_box = None
+            state.last_stale_conf = 0.0
 
         if LOG_INFER_MS and infer_count % LOG_INFER_EVERY == 0:
             mode = "track" if USE_TRACKER and not _tracker_failed else "predict"
             print(f"[human_following] YOLO {mode} infer: {infer_ms:.1f} ms")
     else:
-        best_box = last_stale_box
-        best_conf = last_stale_conf
-        tid_pick = prev_track_id
+        best_box = state.last_stale_box
+        best_conf = state.last_stale_conf
+        tid_pick: Optional[int] = state.prev_track_id
 
     person_found = best_box is not None
     now = time.monotonic()
 
-    if person_found:
-        lost_frames = 0
-        search_active_until = 0.0
-        search_current_cmd = None
-        x1, y1, x2, y2 = xyxy_to_int(best_box)
+    step = follow_control_step(
+        state,
+        _follow_cfg,
+        now=now,
+        fw=fw,
+        fh=fh,
+        person_found=person_found,
+        best_box=best_box,
+        best_conf=float(best_conf or 0.0),
+        tid_pick=tid_pick if run_infer else state.prev_track_id,
+        run_infer=run_infer,
+    )
 
-        if run_infer and tid_pick is not None:
-            prev_track_id = tid_pick
-        prev_center = ((x1 + x2) * 0.5, (y1 + y2) * 0.5)
+    send_cmd(step.cmd)
 
+    if step.bbox is not None:
+        x1, y1, x2, y2 = step.bbox
         cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
         cv2.putText(
             frame,
-            f"person {best_conf:.2f}",
+            f"person {step.conf:.2f}",
             (x1, y1 - 10),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.6,
             (0, 255, 0),
             2,
         )
-
-        box_width = x2 - x1
-        box_height = y2 - y1
-        box_area = box_width * box_height
-        area_ratio = box_area / frame_area
-
-        obj_center_x = (x1 + x2) / 2
-        x_deviation = (obj_center_x / fw) - 0.5
-        x_dev_smooth = SMOOTH_ALPHA * x_deviation + (1.0 - SMOOTH_ALPHA) * x_dev_smooth
-        x_use = x_dev_smooth
-
-        if abs(x_use) > CENTER_TOLERANCE:
-            turn_strength = min(abs(x_use) * 400, TURN_SPEED_MAX)
-            turn_speed = max(int(turn_strength), TURN_SPEED_MIN)
-            cmd_turn = f"L:{turn_speed}" if x_use < 0 else f"R:{turn_speed}"
-
-            if TURN_PULSE_SEC <= 0:
-                send_cmd(cmd_turn)
-                status_text = "TURN LEFT" if x_use < 0 else "TURN RIGHT"
-            else:
-                period = TURN_PULSE_SEC * 2.0
-                phase_t = now % period if period > 0 else 0.0
-                if phase_t < TURN_PULSE_SEC:
-                    send_cmd(cmd_turn)
-                    status_text = "TURN LEFT" if x_use < 0 else "TURN RIGHT"
-                else:
-                    send_cmd("S:0")
-                    status_text = "TURN PAUSE"
-        else:
-            if area_ratio < STOP_AREA_RATIO:
-                send_cmd(f"F:{FORWARD_SPEED}")
-                status_text = "FORWARD"
-            else:
-                send_cmd("S:0")
-                status_text = "STOP (1m reached)"
-
         cv2.putText(
             frame,
-            f"x_dev: {x_use:.2f}",
+            f"x_dev: {step.x_dev_smooth:.2f}",
             (10, 30),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.7,
             (0, 255, 255),
             2,
         )
-
         cv2.putText(
             frame,
-            f"area: {area_ratio:.2f}",
+            f"area: {step.area_ratio:.2f}",
             (10, 60),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.7,
@@ -418,34 +281,9 @@ while True:
             2,
         )
 
-    else:
-        prev_track_id = None
-        prev_center = None
-
-        in_search_pulse = now < search_active_until
-
-        if not in_search_pulse:
-            lost_frames += 1
-            send_cmd("S:0")
-
-        if in_search_pulse and search_current_cmd:
-            send_cmd(search_current_cmd)
-            status_text = "SEARCHING (scan)"
-        elif lost_frames >= LOST_FRAMES_BEFORE_SEARCH:
-            direction = "left" if (search_phase // SEARCH_ALTERNATE_EVERY) % 2 == 0 else "right"
-            speed = TURN_SPEED_MIN
-            search_current_cmd = f"L:{speed}" if direction == "left" else f"R:{speed}"
-            send_cmd(search_current_cmd)
-            search_active_until = now + SEARCH_TURN_DURATION
-            search_phase += 1
-            lost_frames = 0
-            status_text = "SEARCHING (scan)"
-        else:
-            status_text = "SEARCHING"
-
     cv2.putText(
         frame,
-        f"STATUS: {status_text}",
+        f"STATUS: {step.status}",
         (10, 100),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.7,
