@@ -6,7 +6,7 @@ Used by human_following.py (local) and pc_follow_server.py (GPU offload).
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, List, Optional, Tuple
 
 
@@ -17,13 +17,21 @@ class FollowConfig:
     forward_speed: int = 150
     turn_speed_min: int = 115
     turn_speed_max: int = 200
+    # Inner band: |x_dev| below this exits "turning" and allows forward (hysteresis low side).
     center_tolerance: float = 0.05
+    # Outer band: |x_dev| must exceed this to start turning from forward (hysteresis high side).
+    # Reduces L/R chatter when latency causes the target to jump around the center line.
+    turn_enter_tolerance: float = 0.11
     stop_area_ratio: float = 0.35
     lost_frames_before_search: int = 20
     search_turn_duration: float = 0.25
     search_alternate_every: int = 3
     smooth_alpha: float = 0.35
     turn_pulse_sec: float = 0.0
+    # turn_speed ≈ clamp(|x| * align_turn_gain, min, max); lower = gentler corrections
+    align_turn_gain: float = 400.0
+    # Min seconds between switching L->R or R->L; 0 disables. Helps network-delay oscillation.
+    turn_direction_debounce_sec: float = 0.0
 
 
 @dataclass
@@ -38,6 +46,9 @@ class FollowState:
     frame_idx: int = 0
     last_stale_box: Any = None
     last_stale_conf: float = 0.0
+    align_turning: bool = False
+    last_turn_sign: int = 0
+    last_turn_flip_mono: float = 0.0
 
 
 @dataclass
@@ -182,11 +193,41 @@ def follow_control_step(
             + (1.0 - cfg.smooth_alpha) * state.x_dev_smooth
         )
         x_use = state.x_dev_smooth
+        ax = abs(x_use)
 
-        if abs(x_use) > cfg.center_tolerance:
-            turn_strength = min(abs(x_use) * 400, cfg.turn_speed_max)
+        if not state.align_turning:
+            if ax > cfg.turn_enter_tolerance:
+                state.align_turning = True
+        else:
+            if ax < cfg.center_tolerance:
+                state.align_turning = False
+                state.last_turn_sign = 0
+
+        if state.align_turning:
+            desired_sign = -1 if x_use < 0 else 1
+            turn_strength = min(ax * cfg.align_turn_gain, cfg.turn_speed_max)
             turn_speed = max(int(turn_strength), cfg.turn_speed_min)
-            cmd_turn = f"L:{turn_speed}" if x_use < 0 else f"R:{turn_speed}"
+            cmd_turn = f"L:{turn_speed}" if desired_sign < 0 else f"R:{turn_speed}"
+
+            if (
+                cfg.turn_direction_debounce_sec > 0
+                and state.last_turn_sign != 0
+                and desired_sign != state.last_turn_sign
+                and (now - state.last_turn_flip_mono) < cfg.turn_direction_debounce_sec
+            ):
+                return FollowStepResult(
+                    cmd="S:0",
+                    status="STABILIZE",
+                    bbox=bbox_out,
+                    conf=best_conf,
+                    track_id=track_out,
+                    x_dev_smooth=x_use,
+                    area_ratio=area_ratio_out,
+                )
+
+            if state.last_turn_sign != desired_sign:
+                state.last_turn_flip_mono = now
+            state.last_turn_sign = desired_sign
 
             if cfg.turn_pulse_sec <= 0:
                 return FollowStepResult(
@@ -242,6 +283,8 @@ def follow_control_step(
 
     state.prev_track_id = None
     state.prev_center = None
+    state.align_turning = False
+    state.last_turn_sign = 0
 
     in_search_pulse = now < state.search_active_until
 
@@ -290,17 +333,30 @@ def follow_control_step(
 def follow_config_from_env() -> FollowConfig:
     import os
 
+    center_tolerance = float(os.getenv("CENTER_TOLERANCE", "0.05"))
+    te_raw = os.getenv("TURN_ENTER_TOLERANCE", "").strip()
+    if te_raw:
+        turn_enter_tolerance = float(te_raw)
+    else:
+        turn_enter_tolerance = max(center_tolerance * 2.2, 0.09)
+
+    td_raw = os.getenv("TURN_DIRECTION_DEBOUNCE_SEC", "").strip()
+    turn_direction_debounce_sec = float(td_raw) if td_raw else 0.0
+
     return FollowConfig(
         target_class=os.getenv("TARGET_CLASS", "person"),
         min_confidence=float(os.getenv("MIN_CONFIDENCE", "0.4")),
         forward_speed=int(os.getenv("FORWARD_SPEED", "150")),
         turn_speed_min=int(os.getenv("TURN_SPEED_MIN", "115")),
         turn_speed_max=int(os.getenv("TURN_SPEED_MAX", "200")),
-        center_tolerance=float(os.getenv("CENTER_TOLERANCE", "0.05")),
+        center_tolerance=center_tolerance,
+        turn_enter_tolerance=turn_enter_tolerance,
         stop_area_ratio=float(os.getenv("STOP_AREA_RATIO", "0.35")),
         lost_frames_before_search=int(os.getenv("LOST_FRAMES_BEFORE_SEARCH", "20")),
         search_turn_duration=float(os.getenv("SEARCH_TURN_DURATION", "0.25")),
         search_alternate_every=int(os.getenv("SEARCH_ALTERNATE_EVERY", "3")),
         smooth_alpha=float(os.getenv("X_DEV_SMOOTH_ALPHA", "0.35")),
         turn_pulse_sec=float(os.getenv("TURN_PULSE_SEC", "0")),
+        align_turn_gain=float(os.getenv("ALIGN_TURN_GAIN", "400")),
+        turn_direction_debounce_sec=turn_direction_debounce_sec,
     )
