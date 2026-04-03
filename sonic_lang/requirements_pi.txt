@@ -1,0 +1,13 @@
+# Requirements for Raspberry Pi Robot Listener
+# Install with: pip install -r requirements_pi.txt
+
+fastapi>=0.100.0
+uvicorn>=0.23.0
+pyserial>=3.5
+opencv-python>=4.8.0
+pydantic>=2.0.0
+
+# For run_autonomous.py (separate process - talks to robot_listener via HTTP)
+requests>=2.28.0
+# YOLO for autonomous object detection
+ultralytics>=8.0.0

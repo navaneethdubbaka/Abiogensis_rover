@@ -1,0 +1,23 @@
+# Robot Vision Client - Raspberry Pi Requirements
+# ================================================
+# Install: pip install -r requirements_rpi.txt
+
+# HTTP client for server communication
+requests>=2.31.0
+
+# Serial communication with Arduino
+pyserial>=3.5
+
+# Computer vision and image processing
+# Note: opencv-python may take time to install on Pi
+# Alternative: opencv-python-headless (lighter, no GUI support)
+opencv-python>=4.8.0
+# opencv-python-headless>=4.8.0  # Uncomment if you don't need GUI features
+
+# Numerical operations
+numpy>=1.24.0
+
+# Optional: For better performance on Pi
+# Consider installing these system packages via apt:
+# sudo apt-get update
+# sudo apt-get install -y python3-opencv python3-numpy libcamera-dev
