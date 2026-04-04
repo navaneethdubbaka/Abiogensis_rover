@@ -94,9 +94,30 @@ The **PC** runs YOLO and the follow policy; the **Pi** captures JPEGs, POSTs the
    curl http://127.0.0.1:8765/health
    ```
 
+   In **VLM mode** (`PC_FOLLOW_MODE=vlm`), the JSON includes `ollama_reachable` and `ollama_vlm_model`. Ensure Ollama is running and the model name matches `OLLAMA_VLM_MODEL` in `.env`.
+
 Use the PC’s **LAN IP** (not the router/gateway IP), e.g. `192.168.1.42`.
 
-**Related files:** `pc_follow_server.py`, `follow_policy.py`, `pc_follow_server.env.example`, `requirements_pc_follow.txt`
+**Related files:** `pc_follow_server.py`, `follow_policy.py`, `vlm_ollama_follow.py`, `pc_follow_server.env.example`, `requirements_pc_follow.txt`
+
+#### VLM mode (Ollama on the PC)
+
+Instead of YOLO, the PC can call a **vision-capable** model via Ollama. The Pi client and `/follow/step` API are unchanged; the server returns the same `cmd` strings (`F:`, `L:`, `R:`, `S:0`, etc.) parsed from the model’s JSON reply.
+
+1. Install [Ollama](https://ollama.com/) on the PC, pull a vision model (example names vary by Ollama catalog), and keep the daemon running.
+
+2. In `.env` (loaded automatically when you start `pc_follow_server.py` or `uvicorn pc_follow_server:app` from the repo root):
+
+   - `PC_FOLLOW_MODE=vlm`
+   - `OLLAMA_VLM_MODEL=<your-model-tag>` (e.g. `gemma4:e2b` — the “E2B” edge variant; run `ollama pull gemma4:e2b`)
+   - `VLM_OLLAMA_THINK=0` (default) sends Ollama `think: false` for lower latency. Set to `1` only if you want thinking. For Gemma 4, also avoid putting `<|think|>` at the start of `VLM_SYSTEM_PROMPT` when you want thinking off.
+   - Optional: `OLLAMA_BASE_URL`, `OLLAMA_TIMEOUT_SEC`, `VLM_TASK`, `VLM_SYSTEM_PROMPT`, `VLM_*` speed clamps, `VLM_INCLUDE_LAST_CMD=1`
+
+3. Start the server as in Mode B. YOLO weights are **not** loaded when `PC_FOLLOW_MODE=vlm`.
+
+If the model returns invalid JSON or an unknown command, the server uses **`S:0`** and sets `status` to a `vlm_*` code. Check `vlm_error` in the JSON when `status` indicates an Ollama HTTP error.
+
+On the Pi, raise `FOLLOW_HTTP_TIMEOUT` (e.g. `60`–`120`) for slow local models. To avoid posting every camera frame, set `PI_FOLLOW_POST_INTERVAL_SEC=3` (or use `python pi_follow_client.py --post-interval 3`).
 
 ### On the Raspberry Pi
 
@@ -154,6 +175,7 @@ curl -X POST http://PC_IP:8765/follow/reset
 | Pi cannot reach PC | Same subnet, ping PC IP, firewall allows TCP **8765** on the PC |
 | Fast left–right wag | Wired LAN; tune `TURN_ENTER_TOLERANCE`, `X_DEV_SMOOTH_ALPHA`, `TURN_DIRECTION_DEBOUNCE_SEC`, `ALIGN_TURN_GAIN` on the PC (see `pc_follow_server.env.example`) |
 | Model not found | `YOLO_MODEL_PATH` or place `yolo26n.pt` next to the scripts |
+| VLM: always `S:0` or timeouts | Ollama running; `OLLAMA_VLM_MODEL` correct; increase `OLLAMA_TIMEOUT_SEC` and Pi `FOLLOW_HTTP_TIMEOUT`; check `/health` → `ollama_reachable` |
 
 ---
 

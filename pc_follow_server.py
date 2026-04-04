@@ -1,23 +1,25 @@
 """
-PC-side GPU server: receives JPEG frames from the Pi, runs YOLO + follow policy, returns serial commands.
+PC-side server: receives JPEG frames from the Pi, runs YOLO + follow policy OR Ollama VLM, returns serial commands.
 
-Run on the PC (with CUDA):  uvicorn pc_follow_server:app --host 0.0.0.0 --port 8765
+Run on the PC:  uvicorn pc_follow_server:app --host 0.0.0.0 --port 8765
 
-Env: same YOLO and follow knobs as human_following.py (ROBOT_YOLO_*, MIN_CONFIDENCE, etc.).
+Env: PC_FOLLOW_MODE=yolo|vlm; YOLO + follow knobs; or OLLAMA_* / VLM_* for vlm mode.
+Loads `.env` from the project directory (same folder as this file) when present (python-dotenv).
 """
 
 from __future__ import annotations
 
+import asyncio
 import os
 import threading
 import time
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 import cv2
 import numpy as np
+from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from ultralytics import YOLO
 
 from follow_policy import (
     FollowState,
@@ -25,8 +27,13 @@ from follow_policy import (
     follow_control_step,
     select_person_box,
 )
+from vlm_ollama_follow import ollama_reachable, run_vlm_follow_step
+
+if TYPE_CHECKING:
+    from ultralytics import YOLO
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+load_dotenv(os.path.join(_SCRIPT_DIR, ".env"))
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -34,6 +41,11 @@ def _env_bool(name: str, default: bool = False) -> bool:
     if v is None:
         return default
     return v.strip().lower() in ("1", "true", "yes", "on")
+
+
+PC_FOLLOW_MODE = os.getenv("PC_FOLLOW_MODE", "yolo").strip().lower()
+if PC_FOLLOW_MODE not in ("yolo", "vlm"):
+    PC_FOLLOW_MODE = "yolo"
 
 
 def resolve_yolo_model_path() -> str:
@@ -72,10 +84,11 @@ TRACKER_CFG = os.getenv("ROBOT_TRACKER", "bytetrack.yaml").strip() or "bytetrack
 MIN_CONFIDENCE = float(os.getenv("MIN_CONFIDENCE", "0.4"))
 
 _follow_cfg = follow_config_from_env()
-_model: Optional[YOLO] = None
+_model: Optional["YOLO"] = None
 _tracker_failed = False
 _follow_state = FollowState()
 _lock = threading.Lock()
+_last_vlm_cmd: Optional[str] = None
 
 
 def build_yolo_kwargs() -> dict:
@@ -96,10 +109,12 @@ def build_yolo_kwargs() -> dict:
 YOLO_KWARGS = build_yolo_kwargs()
 
 
-def get_model() -> YOLO:
+def get_model() -> "YOLO":
     global _model
     if _model is None:
-        _model = YOLO(MODEL_PATH)
+        from ultralytics import YOLO as YOLOCls
+
+        _model = YOLOCls(MODEL_PATH)
     return _model
 
 
@@ -136,25 +151,38 @@ app.add_middleware(
 
 @app.get("/health")
 def health():
-    return {
+    out = {
         "status": "ok",
+        "pc_follow_mode": PC_FOLLOW_MODE,
         "model_path": MODEL_PATH,
         "model_loaded": _model is not None,
         "tracker_failed": _tracker_failed,
     }
+    if PC_FOLLOW_MODE == "vlm":
+        base = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
+        model = os.getenv("OLLAMA_VLM_MODEL", "").strip()
+        ok, err = ollama_reachable()
+        out["ollama_base_url"] = base
+        out["ollama_vlm_model"] = model or None
+        out["ollama_reachable"] = ok
+        if err:
+            out["ollama_reachable_error"] = err
+    return out
 
 
 @app.post("/follow/reset")
 def follow_reset():
-    global _follow_state
+    global _follow_state, _last_vlm_cmd
     with _lock:
         _follow_state = FollowState()
+        if PC_FOLLOW_MODE == "vlm":
+            _last_vlm_cmd = None
     return {"ok": True, "message": "Follow state reset"}
 
 
 @app.post("/follow/step")
 async def follow_step(image: UploadFile = File(...)):
-    global _follow_state
+    global _follow_state, _last_vlm_cmd
     t_frame = time.perf_counter()
     try:
         raw = await image.read()
@@ -171,6 +199,42 @@ async def follow_step(image: UploadFile = File(...)):
 
     fh, fw = frame.shape[0], frame.shape[1]
     decode_ms = (time.perf_counter() - t_frame) * 1000.0
+
+    if PC_FOLLOW_MODE == "vlm":
+        with _lock:
+            last_for_prompt = _last_vlm_cmd if _env_bool("VLM_INCLUDE_LAST_CMD", False) else None
+
+        vlm = await asyncio.to_thread(
+            run_vlm_follow_step,
+            raw,
+            frame_w=int(fw),
+            frame_h=int(fh),
+            last_cmd=last_for_prompt,
+        )
+
+        with _lock:
+            if _env_bool("VLM_INCLUDE_LAST_CMD", False):
+                _last_vlm_cmd = vlm.cmd
+
+        total_ms = (time.perf_counter() - t_frame) * 1000.0
+        body = {
+            "ok": True,
+            "cmd": vlm.cmd,
+            "status": vlm.status,
+            "bbox": None,
+            "conf": 0.0,
+            "track_id": None,
+            "x_dev_smooth": 0.0,
+            "area_ratio": 0.0,
+            "infer_ms": round(vlm.infer_ms, 2),
+            "decode_ms": round(decode_ms, 2),
+            "total_ms": round(total_ms, 2),
+            "frame_w": fw,
+            "frame_h": fh,
+        }
+        if vlm.ollama_error:
+            body["vlm_error"] = vlm.ollama_error
+        return body
 
     with _lock:
         _follow_state.frame_idx += 1

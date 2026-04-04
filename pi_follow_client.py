@@ -62,6 +62,12 @@ def main() -> None:
         default=float(os.getenv("FOLLOW_HTTP_TIMEOUT", "3.0")),
         help="POST read timeout (seconds)",
     )
+    parser.add_argument(
+        "--post-interval",
+        type=float,
+        default=float(os.getenv("PI_FOLLOW_POST_INTERVAL_SEC", "0")),
+        help="Seconds to sleep after each server round-trip (0 = every frame; use 2–5 for slow VLM)",
+    )
     parser.add_argument("--no-preview", action="store_true", help="Do not open cv2 window")
     args = parser.parse_args()
 
@@ -100,6 +106,11 @@ def main() -> None:
         cv2.namedWindow("Pi follow client", cv2.WINDOW_NORMAL)
 
     encode_params = [cv2.IMWRITE_JPEG_QUALITY, max(1, min(100, args.jpeg_quality))]
+    post_interval = max(0.0, float(args.post_interval))
+
+    def maybe_post_throttle() -> None:
+        if post_interval > 0:
+            time.sleep(post_interval)
 
     try:
         while True:
@@ -112,6 +123,7 @@ def main() -> None:
             ok_buf, buf = cv2.imencode(".jpg", frame, encode_params)
             if not ok_buf:
                 send_cmd("S:0")
+                maybe_post_throttle()
                 continue
 
             try:
@@ -136,15 +148,18 @@ def main() -> None:
                     if cv2.waitKey(1) & 0xFF == 27:
                         break
                 time.sleep(0.05)
+                maybe_post_throttle()
                 continue
 
             if r.status_code != 200:
                 send_cmd("S:0")
+                maybe_post_throttle()
                 continue
 
             data = r.json()
             if not data.get("ok") or "cmd" not in data:
                 send_cmd("S:0")
+                maybe_post_throttle()
                 continue
 
             send_cmd(str(data["cmd"]))
@@ -185,6 +200,8 @@ def main() -> None:
                 cv2.imshow("Pi follow client", frame)
                 if cv2.waitKey(1) & 0xFF == 27:
                     break
+
+            maybe_post_throttle()
 
     finally:
         send_cmd("S:0")

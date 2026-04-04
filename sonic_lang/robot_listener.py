@@ -476,6 +476,7 @@ async def control_page():
             justify-content: center;
             -webkit-tap-highlight-color: transparent;
             user-select: none;
+            touch-action: none;
         }
         
         .control-btn:active {
@@ -640,9 +641,12 @@ async def control_page():
     
     <script>
         const API_BASE = '';
+        const HOLD_REPEAT_MS = 120;
         let currentSpeed = 150;
         let isListening = false;
         let recognition = null;
+        let holdRepeatTimer = null;
+        let activeHeldDirection = null;
         
         // Initialize Speech Recognition
         if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
@@ -725,6 +729,24 @@ async def control_page():
                 console.error('Move error:', error);
             }
         }
+
+        function stopDirectionHold() {
+            if (holdRepeatTimer) {
+                clearInterval(holdRepeatTimer);
+                holdRepeatTimer = null;
+            }
+            if (activeHeldDirection) {
+                sendMove('stop');
+                activeHeldDirection = null;
+            }
+        }
+
+        function startDirectionHold(direction) {
+            stopDirectionHold();
+            activeHeldDirection = direction;
+            sendMove(direction);
+            holdRepeatTimer = setInterval(() => sendMove(direction), HOLD_REPEAT_MS);
+        }
         
         async function setServo(angle) {
             try {
@@ -760,35 +782,42 @@ async def control_page():
             }
         }
         
-        // Event listeners
+        // Direction buttons: pointer events + repeat while held
         document.querySelectorAll('.control-btn').forEach(btn => {
             const direction = btn.dataset.direction;
-            
-            // Touch events for continuous movement
-            btn.addEventListener('touchstart', (e) => {
+            let capturedPointerId = null;
+
+            btn.addEventListener('pointerdown', (e) => {
+                if (e.button !== 0) return;
                 e.preventDefault();
-                sendMove(direction);
-            });
-            
-            btn.addEventListener('touchend', (e) => {
-                e.preventDefault();
-                if (direction !== 'stop') {
+                if (direction === 'stop') {
+                    stopDirectionHold();
                     sendMove('stop');
+                    return;
+                }
+                startDirectionHold(direction);
+                try {
+                    btn.setPointerCapture(e.pointerId);
+                    capturedPointerId = e.pointerId;
+                } catch (err) {
+                    capturedPointerId = e.pointerId;
                 }
             });
-            
-            // Mouse events for desktop
-            btn.addEventListener('mousedown', () => sendMove(direction));
-            btn.addEventListener('mouseup', () => {
-                if (direction !== 'stop') {
-                    sendMove('stop');
+
+            const onPointerEnd = (e) => {
+                if (capturedPointerId !== null && e.pointerId === capturedPointerId) {
+                    try {
+                        btn.releasePointerCapture(e.pointerId);
+                    } catch (err) { /* ignore */ }
+                    capturedPointerId = null;
                 }
-            });
-            btn.addEventListener('mouseleave', () => {
-                if (direction !== 'stop') {
-                    sendMove('stop');
+                if (direction !== 'stop' && activeHeldDirection === direction) {
+                    stopDirectionHold();
                 }
-            });
+            };
+
+            btn.addEventListener('pointerup', onPointerEnd);
+            btn.addEventListener('pointercancel', onPointerEnd);
         });
         
         // Mic button
