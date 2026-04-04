@@ -27,7 +27,12 @@ from follow_policy import (
     follow_control_step,
     select_person_box,
 )
-from vlm_ollama_follow import ollama_reachable, run_vlm_follow_step
+from vlm_ollama_follow import (
+    VlmStepResult,
+    get_vlm_system_prompt,
+    ollama_reachable,
+    run_vlm_follow_step,
+)
 
 if TYPE_CHECKING:
     from ultralytics import YOLO
@@ -46,6 +51,31 @@ def _env_bool(name: str, default: bool = False) -> bool:
 PC_FOLLOW_MODE = os.getenv("PC_FOLLOW_MODE", "yolo").strip().lower()
 if PC_FOLLOW_MODE not in ("yolo", "vlm"):
     PC_FOLLOW_MODE = "yolo"
+
+
+def _print_vlm_step_to_terminal(vlm: VlmStepResult) -> None:
+    if not _env_bool("VLM_PRINT_RESPONSE", True):
+        return
+    raw = os.getenv("VLM_LOG_RESPONSE_MAX_CHARS", "8000").strip()
+    try:
+        max_c = int(raw)
+    except ValueError:
+        max_c = 8000
+    print(
+        f"[VLM] cmd={vlm.cmd!r} status={vlm.status!r} infer_ms={vlm.infer_ms:.1f}",
+        flush=True,
+    )
+    if vlm.ollama_error:
+        print(f"[VLM] ollama_error: {vlm.ollama_error}", flush=True)
+        return
+    if vlm.raw_assistant:
+        text = vlm.raw_assistant
+        if max_c > 0 and len(text) > max_c:
+            text = (
+                text[:max_c]
+                + f"\n... ({len(vlm.raw_assistant)} chars total, truncated for log)"
+            )
+        print("[VLM] assistant:\n" + text, flush=True)
 
 
 def resolve_yolo_model_path() -> str:
@@ -149,6 +179,17 @@ app.add_middleware(
 )
 
 
+@app.on_event("startup")
+def _vlm_log_system_prompt_at_startup() -> None:
+    if PC_FOLLOW_MODE != "vlm":
+        return
+    if not _env_bool("VLM_LOG_SYSTEM_PROMPT_AT_START", True):
+        return
+    prompt = get_vlm_system_prompt()
+    print(f"[VLM] startup: effective system prompt ({len(prompt)} chars):", flush=True)
+    print(prompt, flush=True)
+
+
 @app.get("/health")
 def health():
     out = {
@@ -211,6 +252,7 @@ async def follow_step(image: UploadFile = File(...)):
             frame_h=int(fh),
             last_cmd=last_for_prompt,
         )
+        _print_vlm_step_to_terminal(vlm)
 
         with _lock:
             if _env_bool("VLM_INCLUDE_LAST_CMD", False):

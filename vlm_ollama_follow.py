@@ -1,7 +1,9 @@
 """
 Ollama vision LLM step: JPEG -> /api/chat with base64 image -> JSON {"cmd": ...} -> validated serial command.
 
-Used by pc_follow_server when PC_FOLLOW_MODE=vlm. Env: OLLAMA_BASE_URL, OLLAMA_VLM_MODEL, VLM_*, etc.
+Used by pc_follow_server when PC_FOLLOW_MODE=vlm.
+Env: OLLAMA_BASE_URL, OLLAMA_VLM_MODEL, VLM_TASK, VLM_SYSTEM_PROMPT, VLM_SYSTEM_PROMPT_FILE,
+VLM_PRINT_RESPONSE, VLM_LOG_SYSTEM_PROMPT_AT_START, VLM_LOG_RESPONSE_MAX_CHARS, etc.
 """
 
 from __future__ import annotations
@@ -10,6 +12,7 @@ import base64
 import json
 import os
 import re
+import sys
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
@@ -28,7 +31,7 @@ class VlmStepResult:
     cmd: str
     status: str
     infer_ms: float
-    raw_assistant: Optional[str] = None
+    raw_assistant: Optional[str] = None  # full Ollama assistant text (logging / debug)
     ollama_error: Optional[str] = None
 
 
@@ -41,11 +44,27 @@ def _vlm_bounds() -> Tuple[int, int, int, int]:
     return min_turn, max_turn, max_forward, max_back
 
 
-def _system_prompt() -> str:
-    custom = os.getenv("VLM_SYSTEM_PROMPT", "").strip()
-    if custom:
+def get_vlm_system_prompt() -> str:
+    """
+    Effective system prompt: VLM_SYSTEM_PROMPT (env) if set, else VLM_SYSTEM_PROMPT_FILE (UTF-8),
+    else built-in schema + VLM_TASK.
+    """
+    env_custom = os.getenv("VLM_SYSTEM_PROMPT", "").strip()
+    if env_custom:
         # Gemma 4: do not put <|think|> here — that enables thinking (Ollama readme).
-        return custom
+        return env_custom
+    path = os.getenv("VLM_SYSTEM_PROMPT_FILE", "").strip()
+    if path:
+        if os.path.isfile(path):
+            try:
+                with open(path, encoding="utf-8") as f:
+                    text = f.read().strip()
+                if text:
+                    return text
+            except OSError as e:
+                print(f"[VLM] warning: could not read VLM_SYSTEM_PROMPT_FILE={path!r}: {e}", file=sys.stderr)
+        else:
+            print(f"[VLM] warning: VLM_SYSTEM_PROMPT_FILE not found: {path!r}", file=sys.stderr)
     task = os.getenv(
         "VLM_TASK",
         "You drive a small rover from the camera view. Choose one motor command that best achieves the task.",
@@ -62,7 +81,9 @@ def _system_prompt() -> str:
         f"- R:n turn right, n integer {min_t}..{max_t}\n"
         "- P:n pan/servo angle, n integer 0..180\n"
         "- S:0 stop immediately\n\n"
-        "If the scene is unclear, unsafe, or you are not confident, use {\"cmd\":\"S:0\",\"reason\":\"uncertain\"}."
+        "Use {\"cmd\":\"S:0\"} only for clear danger or when the image shows no usable view (e.g. lens blocked). "
+        "If the scene is ambiguous or you are still looking for the goal, pick one cautious move "
+        f"(slow F:{min_t}, L:{min_t}, or R:{min_t}) to explore—do not answer uncertain every frame."
     )
 
 
@@ -164,7 +185,7 @@ def run_vlm_follow_step(
         "model": model,
         "stream": False,
         "messages": [
-            {"role": "system", "content": _system_prompt()},
+            {"role": "system", "content": get_vlm_system_prompt()},
             {
                 "role": "user",
                 "content": user_content,
@@ -219,7 +240,7 @@ def run_vlm_follow_step(
             cmd="S:0",
             status="vlm_parse_error",
             infer_ms=infer_ms,
-            raw_assistant=content[:2000],
+            raw_assistant=content,
         )
 
     raw_cmd = parsed.get("cmd")
@@ -228,7 +249,7 @@ def run_vlm_follow_step(
             cmd="S:0",
             status="vlm_parse_error",
             infer_ms=infer_ms,
-            raw_assistant=content[:2000],
+            raw_assistant=content,
         )
 
     cmd, tag = _validate_and_clamp_cmd(raw_cmd)
@@ -239,7 +260,7 @@ def run_vlm_follow_step(
     else:
         status = "vlm_ok"
 
-    return VlmStepResult(cmd=cmd, status=status, infer_ms=infer_ms, raw_assistant=content[:500])
+    return VlmStepResult(cmd=cmd, status=status, infer_ms=infer_ms, raw_assistant=content)
 
 
 def ollama_reachable() -> Tuple[bool, Optional[str]]:
