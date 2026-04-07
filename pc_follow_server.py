@@ -106,9 +106,65 @@ def _parse_classes_filter():
 
 MODEL_PATH = resolve_yolo_model_path()
 ROBOT_YOLO_IMGSZ = int(os.getenv("ROBOT_YOLO_IMGSZ", "320"))
-ROBOT_YOLO_DEVICE = os.getenv("ROBOT_YOLO_DEVICE", "").strip() or None
-ROBOT_YOLO_HALF = _env_bool("ROBOT_YOLO_HALF", False)
+ROBOT_YOLO_DEVICE_ENV = os.getenv("ROBOT_YOLO_DEVICE", "").strip() or None
+ROBOT_YOLO_HALF_ENV = _env_bool("ROBOT_YOLO_HALF", False)
 ROBOT_YOLO_CLASSES = _parse_classes_filter()
+
+
+def _yolo_env_requests_cuda(device_str: str) -> bool:
+    s = device_str.strip().lower()
+    if s in ("cpu", "mps", ""):
+        return False
+    if s.isdigit():
+        return True
+    if s.startswith("cuda"):
+        return True
+    if s == "gpu":
+        return True
+    return False
+
+
+def _resolve_yolo_device_and_half() -> tuple[Optional[str], bool]:
+    """
+    Ultralytics device=0 requires a CUDA-enabled PyTorch build. CPU-only wheels
+    (torch+cpu) make cuda.is_available() False — fall back to cpu and disable half.
+    """
+    dev = ROBOT_YOLO_DEVICE_ENV
+    half = ROBOT_YOLO_HALF_ENV
+    if PC_FOLLOW_MODE != "yolo":
+        return dev, half
+    if not dev:
+        return None, half
+    if dev.lower() == "cpu":
+        return "cpu", False
+    if not _yolo_env_requests_cuda(dev):
+        return dev, half
+    try:
+        import torch
+    except ImportError:
+        return dev, half
+    if torch.cuda.is_available() and torch.cuda.device_count() > 0:
+        return dev, half
+    print(
+        "[YOLO] ROBOT_YOLO_DEVICE=%r expects CUDA, but torch.cuda.is_available() is False "
+        "(this venv likely has the CPU-only PyTorch package; `torch.__version__` often ends in +cpu)."
+        % (dev,),
+        flush=True,
+    )
+    print(
+        "[YOLO] Using device=cpu for now. For NVIDIA GPU: pip uninstall torch torchvision torchaudio; "
+        "then install the CUDA build from https://pytorch.org/get-started/locally/",
+        flush=True,
+    )
+    if os.environ.get("CUDA_VISIBLE_DEVICES", "").strip():
+        print(
+            "[YOLO] CUDA_VISIBLE_DEVICES is set; it only applies once CUDA PyTorch sees a GPU.",
+            flush=True,
+        )
+    return "cpu", False
+
+
+ROBOT_YOLO_DEVICE, ROBOT_YOLO_HALF = _resolve_yolo_device_and_half()
 USE_TRACKER = _env_bool("ROBOT_USE_TRACKER", True)
 TRACKER_CFG = os.getenv("ROBOT_TRACKER", "bytetrack.yaml").strip() or "bytetrack.yaml"
 MIN_CONFIDENCE = float(os.getenv("MIN_CONFIDENCE", "0.4"))
@@ -208,6 +264,19 @@ def health():
         out["ollama_reachable"] = ok
         if err:
             out["ollama_reachable_error"] = err
+    if PC_FOLLOW_MODE == "yolo":
+        try:
+            import torch
+
+            out["torch_cuda_available"] = bool(torch.cuda.is_available())
+            out["torch_version"] = torch.__version__
+        except Exception:
+            out["torch_cuda_available"] = None
+            out["torch_version"] = None
+        out["robot_yolo_device_env"] = ROBOT_YOLO_DEVICE_ENV
+        out["robot_yolo_device_effective"] = (
+            ROBOT_YOLO_DEVICE if ROBOT_YOLO_DEVICE is not None else "auto"
+        )
     return out
 
 
