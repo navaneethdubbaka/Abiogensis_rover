@@ -1,0 +1,3 @@
+# Install from this folder:  pip install -r requirements.txt
+# Resolves to the PC dependency list at the repository root.
+-r ../requirements_safety.txt

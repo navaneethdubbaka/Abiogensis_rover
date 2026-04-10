@@ -56,10 +56,24 @@ Set the model name later in `.env` as `SAFETY_VLM_MODEL` (e.g. `llava` or the ex
 
 ## 2. Install Python dependencies (PC)
 
-From the **repository root** (`Abiogensis_rover-main`):
+The file `requirements_safety.txt` lives in the **repository root** (parent of `safety_monitor/`).
+
+From the **repository root**:
 
 ```bash
 pip install -r requirements_safety.txt
+```
+
+If your shell is already inside `safety_monitor/`, use either:
+
+```bash
+pip install -r requirements.txt
+```
+
+(that file includes the root list) or:
+
+```bash
+pip install -r ../requirements_safety.txt
 ```
 
 ---
@@ -157,6 +171,8 @@ python safety_pi_sender.py --server http://YOUR_PC_IP:8766 --camera-id pi_cam
 ```
 
 Useful flags: `--camera 0`, `--width 640`, `--height 480`, `--jpeg-quality 80`, `--interval 7.5`, `--timeout 15`, `--token <secret>`.
+
+By default a **live preview window** opens (`Esc` to quit). For SSH without a display, use `--no-preview` or set `HEADLESS=1`. The Pi requirements use **`opencv-python`** (not headless) so `imshow` works on a desktop Pi; for a headless install use `opencv-python-headless` plus `--no-preview`.
 
 ---
 

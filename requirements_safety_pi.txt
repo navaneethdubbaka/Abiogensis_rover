@@ -1,4 +1,5 @@
-# Raspberry Pi: upload-only client (safety_pi_sender.py)
-opencv-python-headless>=4.8.0
+# Raspberry Pi: safety_pi_sender.py (live window needs GUI build)
+# Headless/SSH only: use opencv-python-headless and run with --no-preview
+opencv-python>=4.8.0
 httpx>=0.24.0
 python-dotenv>=1.0.0

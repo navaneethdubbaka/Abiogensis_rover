@@ -21,3 +21,10 @@ numpy>=1.24.0
 # Consider installing these system packages via apt:
 # sudo apt-get update
 # sudo apt-get install -y python3-opencv python3-numpy libcamera-dev
+fastapi>=0.100.0
+uvicorn[standard]>=0.22.0
+httpx>=0.24.0
+python-dotenv>=1.0.0
+opencv-python-headless>=4.8.0
+numpy>=1.24.0
+PyYAML>=6.0

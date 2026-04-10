@@ -6,6 +6,9 @@ Run:  python safety_pi_sender.py
 Or:   python safety_pi_sender.py --server http://PC_LAN_IP:8766
 
 PC must be running: python -m safety_monitor.main
+
+Shows a live camera window by default (Esc to exit). Use --no-preview or HEADLESS=1
+without a display. Requires opencv-python (GUI); use opencv-python-headless + --no-preview on headless Pi.
 """
 
 from __future__ import annotations
@@ -23,6 +26,13 @@ try:
     load_dotenv()
 except ImportError:
     pass
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    v = os.getenv(name)
+    if v is None:
+        return default
+    return v.strip().lower() in ("1", "true", "yes", "on")
 
 
 def main() -> None:
@@ -57,7 +67,14 @@ def main() -> None:
         default=os.getenv("SAFETY_INGEST_TOKEN", ""),
         help="If PC has SAFETY_INGEST_SECRET, pass the same value (sent as X-Safety-Token)",
     )
+    parser.add_argument(
+        "--no-preview",
+        action="store_true",
+        help="Do not open a live window (use on SSH/headless Pi)",
+    )
     args = parser.parse_args()
+
+    preview = not args.no_preview and not _env_bool("HEADLESS", False)
 
     url = f"{args.server}/safety/ingest"
     headers = {}
@@ -73,6 +90,31 @@ def main() -> None:
     interval = max(0.5, float(args.interval))
 
     grab_flush = max(0, int(os.getenv("CAMERA_GRAB_FLUSH", "1")))
+    win = "Safety Pi camera"
+    if preview:
+        cv2.namedWindow(win, cv2.WINDOW_NORMAL)
+
+    def draw_overlay(display, status: str) -> None:
+        cv2.putText(
+            display,
+            f"{args.camera_id} | {status}",
+            (8, 24),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55,
+            (0, 255, 255),
+            2,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            display,
+            "Esc quit",
+            (8, display.shape[0] - 12),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.45,
+            (200, 200, 200),
+            1,
+            cv2.LINE_AA,
+        )
 
     try:
         with httpx.Client(timeout=args.timeout) as client:
@@ -89,6 +131,7 @@ def main() -> None:
                     time.sleep(0.2)
                     continue
                 jpeg = buf.tobytes()
+                upload_status = "upload ok"
                 try:
                     r = client.post(
                         url,
@@ -98,14 +141,24 @@ def main() -> None:
                     )
                     r.raise_for_status()
                 except httpx.HTTPError as e:
+                    upload_status = f"net err"
                     print(f"[safety_pi_sender] upload failed: {e}")
                     time.sleep(min(5.0, interval))
+                if preview:
+                    vis = frame.copy()
+                    draw_overlay(vis, upload_status)
+                    cv2.imshow(win, vis)
+                    key = cv2.waitKey(1) & 0xFF
+                    if key == 27:
+                        break
                 elapsed = time.monotonic() - t0
                 sleep_for = max(0.0, interval - elapsed)
                 if sleep_for > 0:
                     time.sleep(sleep_for)
     finally:
         cap.release()
+        if preview:
+            cv2.destroyAllWindows()
 
 
 if __name__ == "__main__":
