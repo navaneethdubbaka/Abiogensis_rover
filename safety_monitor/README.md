@@ -175,6 +175,7 @@ Set environment variables (or use a `.env` in the working directory if you insta
 | `SAFETY_UPLOAD_INTERVAL_SEC` | `7.5` | Seconds between uploads |
 | `SAFETY_INGEST_TOKEN` | same as PC `SAFETY_INGEST_SECRET` | If PC uses ingest secret |
 | `SAFETY_PI_CAP_BACKEND` | `v4l2` (default on Raspberry Pi OS) | USB: V4L2; set `any` if you need the default OpenCV backend |
+| `VIDEO_DEVICE` | `/dev/video0` | If the wrong camera opens, set the V4L2 device path explicitly |
 | `SAFETY_PI_USE_PICAMERA2` | `0` (default) | Set `1` only for **CSI** camera (or use `--picamera2`) |
 
 Run (USB example):
@@ -300,6 +301,8 @@ Set `SAFETY_WEBHOOK_URL` to receive a POST (JSON body, or multipart with `image`
 | No Telegram | `TELEGRAM_*` set? `SAFETY_DRY_RUN=0`? Severity actually warning/critical? Debounce not suppressing duplicate warnings? |
 | Ollama down but no Telegram (by design) | Default `SAFETY_NOTIFY_TELEGRAM_ON_OLLAMA_DOWN=0` skips Telegram for “can’t reach Ollama” errors (still logged to JSONL). Set to `1` if you want those alerts. |
 | Parse / inference errors | Logs in JSONL; try a smaller `SAFETY_MAX_IMAGE_SIDE` or a different VLM; ensure the model supports images. |
+| Pi: OpenCV **GStreamer** warnings (`cap_gstreamer.cpp`) | The script now prefers **V4L2** (`/dev/videoN`) and sets `OPENCV_VIDEOIO_PRIORITY_V4L2` before importing OpenCV. Update `safety_pi_sender.py` or set `VIDEO_DEVICE=/dev/video0` if needed. |
+| Pi: **QStandardPaths** / `/run/user/1000` permissions | Qt/GUI noise: your session dir should be `0700`. Often: `chmod 700 /run/user/$(id -u)` (may reset on login) or log out and back in; harmless for capture if preview still works. |
 | Pi upload failures | PC IP/port, firewall on PC for 8766, `SAFETY_HTTP_TIMEOUT`, Wi‑Fi stability. |
 
 ---

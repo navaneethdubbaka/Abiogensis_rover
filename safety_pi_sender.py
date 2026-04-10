@@ -26,14 +26,24 @@ import sys
 import time
 from types import SimpleNamespace
 
-import cv2
-import httpx
-
 try:
     from dotenv import load_dotenv
 
     load_dotenv()
 except ImportError:
+    pass
+
+# Before import cv2: prefer V4L2 over GStreamer for USB cameras on Raspberry Pi OS.
+if sys.platform == "linux":
+    os.environ.setdefault("OPENCV_VIDEOIO_PRIORITY_V4L2", "999999")
+    os.environ.setdefault("OPENCV_LOG_LEVEL", "ERROR")
+
+import cv2
+import httpx
+
+try:
+    cv2.utils.logging.setLogLevel(cv2.utils.logging.LOG_LEVEL_ERROR)
+except AttributeError:
     pass
 
 
@@ -42,6 +52,31 @@ def _env_bool(name: str, default: bool = False) -> bool:
     if v is None:
         return default
     return v.strip().lower() in ("1", "true", "yes", "on")
+
+
+def _open_usb_capture_v4l2(camera_index: int):
+    """
+    Open USB webcam via V4L2 device path first (avoids GStreamer backend on Raspberry Pi OS).
+    Set VIDEO_DEVICE=/dev/videoN to force a path. Falls back to numeric index, then CAP_ANY.
+    """
+    candidates: list = []
+    dev = os.getenv("VIDEO_DEVICE", "").strip()
+    if dev:
+        candidates.append(dev)
+    candidates.append(f"/dev/video{camera_index}")
+    candidates.append(camera_index)
+
+    for src in candidates:
+        c = cv2.VideoCapture(src, cv2.CAP_V4L2)
+        if c.isOpened():
+            return c
+        c.release()
+
+    print(
+        "[safety_pi_sender] V4L2 open failed; trying default backend (may show GStreamer warnings).",
+        file=sys.stderr,
+    )
+    return cv2.VideoCapture(camera_index, cv2.CAP_ANY)
 
 
 def draw_overlay(display, camera_id: str, status: str) -> None:
@@ -182,7 +217,7 @@ def run_opencv(
         except cv2.error:
             print(
                 "[safety_pi_sender] OpenCV has no GUI (common with pip wheels). "
-                "For Pi Camera Module use Picamera2: pip install picamera2 (default on Linux). "
+                "For Pi Camera Module use Picamera2: pip install picamera2 and --picamera2. "
                 "For USB cam + preview: sudo apt install python3-opencv and venv --system-site-packages.",
                 file=sys.stderr,
             )
@@ -194,10 +229,11 @@ def run_opencv(
             backend = cv2.CAP_V4L2
         elif b == "any":
             backend = cv2.CAP_ANY
-    cap = cv2.VideoCapture(args.camera, backend)
-    if sys.platform == "linux" and backend == cv2.CAP_V4L2 and not cap.isOpened():
-        cap.release()
-        cap = cv2.VideoCapture(args.camera, cv2.CAP_ANY)
+
+    if sys.platform == "linux" and backend == cv2.CAP_V4L2:
+        cap = _open_usb_capture_v4l2(args.camera)
+    else:
+        cap = cv2.VideoCapture(args.camera, backend)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, args.width)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, args.height)
     cap.set(cv2.CAP_PROP_BUFFERSIZE, int(os.getenv("CAMERA_BUFFER_SIZE", "1")))
