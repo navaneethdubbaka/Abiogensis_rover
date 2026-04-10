@@ -1,6 +1,7 @@
-# Raspberry Pi OS: safety_pi_sender.py — USB camera via OpenCV (V4L2)
-# Live preview: sudo apt install python3-opencv + venv --system-site-packages (see safety_monitor/README.md)
-# CSI ribbon camera: pip install picamera2, run with --picamera2
+# Raspberry Pi OS: safety_pi_sender.py — USB via OpenCV; live preview = browser MJPEG (like robot_listener.py)
+# CSI ribbon: pip install picamera2, --picamera2
 opencv-python-headless>=4.8.0
 httpx>=0.24.0
 python-dotenv>=1.0.0
+fastapi>=0.100.0
+uvicorn>=0.22.0

@@ -155,7 +155,7 @@ uvicorn safety_monitor.server:app --host 0.0.0.0 --port 8766
 
 Instructions below target **Raspberry Pi OS** (`apt`, V4L2 USB stack, optional `python3-opencv` from Raspberry Pi / Debian repos).
 
-**USB webcam (default):** `safety_pi_sender.py` uses **OpenCV** `VideoCapture` on Raspberry Pi OS with the **V4L2** backend by default (standard for USB cameras). Use `--camera 0` (or `1`, …) if the wrong device opens.
+**USB webcam (default):** `safety_pi_sender.py` opens the camera like **`robot_listener.py`**: `cv2.VideoCapture(CAMERA_INDEX)`. **Live view** is **not** `imshow` (avoids Qt/GTK issues); it starts a small **MJPEG server** (FastAPI + uvicorn). Open **`http://127.0.0.1:9080/`** on the Pi (or `http://<pi-ip>:9080/` from a phone/PC on the LAN). Use `--no-preview` to skip that server.
 
 **Official CSI / ribbon camera:** install `picamera2` and run with **`--picamera2`** or set **`SAFETY_PI_USE_PICAMERA2=1`**. Do **not** use that for a USB camera.
 
@@ -174,8 +174,9 @@ Set environment variables (or use a `.env` in the working directory if you insta
 | `CAMERA_INDEX` | `0` | USB camera device index for OpenCV |
 | `SAFETY_UPLOAD_INTERVAL_SEC` | `7.5` | Seconds between uploads |
 | `SAFETY_INGEST_TOKEN` | same as PC `SAFETY_INGEST_SECRET` | If PC uses ingest secret |
-| `SAFETY_PI_CAP_BACKEND` | `v4l2` (default on Raspberry Pi OS) | USB: V4L2; set `any` if you need the default OpenCV backend |
-| `VIDEO_DEVICE` | `/dev/video0` | If the wrong camera opens, set the V4L2 device path explicitly |
+| `SAFETY_PI_PREVIEW_PORT` | `9080` | Browser MJPEG preview (`http://<pi>:9080/`) |
+| `SAFETY_PI_OPEN_BROWSER` | `1` | Open preview in default browser when `DISPLAY` is set |
+| `SAFETY_PI_STREAM_JPEG_QUALITY` | `80` | JPEG quality for the MJPEG stream |
 | `SAFETY_PI_USE_PICAMERA2` | `0` (default) | Set `1` only for **CSI** camera (or use `--picamera2`) |
 
 Run (USB example):
@@ -186,25 +187,11 @@ python safety_pi_sender.py --server http://YOUR_PC_IP:8766 --camera-id pi_cam --
 
 Useful flags: `--camera 0`, `--width 640`, `--height 480`, `--jpeg-quality 80`, `--interval 7.5`, `--timeout 15`, `--token <secret>`.
 
-The script **tries** to open a live OpenCV preview (`Esc` to quit) when not `--no-preview` / `HEADLESS`. **Pip’s `opencv-python-headless` has no GUI**, so `imshow` may fail; uploads still work. For a **visible USB feed**, use **`python3-opencv` from apt** with a venv **`--system-site-packages`** (see below). To force no window: `--no-preview` or `HEADLESS=1`.
+Preview uses **`pip install fastapi uvicorn`** (listed in `requirements_safety_pi.txt`), same idea as [`sonic_lang/robot_listener.py`](../sonic_lang/robot_listener.py) `/camera/stream`. No desktop OpenCV GUI required.
 
-### Live preview on Raspberry Pi OS (real `imshow`)
+### Older note: OpenCV `imshow`
 
-Use the **`python3-opencv`** package from **apt** on Raspberry Pi OS (GTK-linked build), and let your venv see it:
-
-```bash
-sudo apt update
-sudo apt install python3-opencv
-cd ~/your-project
-python3 -m venv venv --system-site-packages
-source venv/bin/activate
-pip install httpx python-dotenv
-python safety_pi_sender.py --server http://YOUR_PC_IP:8766
-```
-
-Do **not** `pip install opencv-python` in that venv if you want the system GUI build (it can override `cv2` with a headless wheel). If you already installed a pip OpenCV, run `pip uninstall opencv-python opencv-python-headless` inside the venv, then rely on `python3-opencv` via `--system-site-packages`.
-
-Alternatively run **without** a preview: keep `requirements_safety_pi.txt` (headless) and use `--no-preview`.
+The sender **no longer** uses `cv2.imshow` for USB. If you only need uploads, use `--no-preview`.
 
 ---
 
@@ -301,8 +288,7 @@ Set `SAFETY_WEBHOOK_URL` to receive a POST (JSON body, or multipart with `image`
 | No Telegram | `TELEGRAM_*` set? `SAFETY_DRY_RUN=0`? Severity actually warning/critical? Debounce not suppressing duplicate warnings? |
 | Ollama down but no Telegram (by design) | Default `SAFETY_NOTIFY_TELEGRAM_ON_OLLAMA_DOWN=0` skips Telegram for “can’t reach Ollama” errors (still logged to JSONL). Set to `1` if you want those alerts. |
 | Parse / inference errors | Logs in JSONL; try a smaller `SAFETY_MAX_IMAGE_SIDE` or a different VLM; ensure the model supports images. |
-| Pi: OpenCV **GStreamer** warnings (`cap_gstreamer.cpp`) | The script now prefers **V4L2** (`/dev/videoN`) and sets `OPENCV_VIDEOIO_PRIORITY_V4L2` before importing OpenCV. Update `safety_pi_sender.py` or set `VIDEO_DEVICE=/dev/video0` if needed. |
-| Pi: **QStandardPaths** / `/run/user/1000` permissions | Qt/GUI noise: your session dir should be `0700`. Often: `chmod 700 /run/user/$(id -u)` (may reset on login) or log out and back in; harmless for capture if preview still works. |
+| Pi: no live picture | Open **`http://127.0.0.1:9080/`** (or your `SAFETY_PI_PREVIEW_PORT`) in Chromium; ensure `pip install fastapi uvicorn`. Firewall: allow that TCP port on the Pi if viewing from another device. |
 | Pi upload failures | PC IP/port, firewall on PC for 8766, `SAFETY_HTTP_TIMEOUT`, Wi‑Fi stability. |
 
 ---
