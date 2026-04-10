@@ -1,0 +1,8 @@
+# Copy to a path and set SAFETY_RULES_FILE=/path/to/rules.yaml
+# Bump severity when rationale/title contain a keyword (case-insensitive substring match).
+
+severity_bump_keywords:
+  fire: critical
+  smoke: critical
+  flood: warning
+  intruder: critical
