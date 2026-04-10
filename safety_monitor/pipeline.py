@@ -146,6 +146,16 @@ class SafetyPipeline:
             think=self.settings.ollama_think,
         )
 
+        if self.settings.print_ollama_response:
+            chunk = (raw if raw else err) or ""
+            mx = self.settings.ollama_log_max_chars
+            if mx > 0 and len(chunk) > mx:
+                chunk = chunk[:mx] + "…"
+            print(
+                f"[safety] cam={camera_id} infer={infer_ms:.0f}ms Ollama:\n{chunk}\n---",
+                flush=True,
+            )
+
         if parsed is None:
             event = SafetyEvent(
                 camera_id=camera_id,
@@ -190,6 +200,19 @@ class SafetyPipeline:
         self.event_log.write(log_obj)
 
         if self.settings.dry_run:
+            return
+
+        err_text = ((event.ollama_error or "") + (event.rationale or "")).lower()
+        ollama_unreachable = (
+            event.title == "Safety inference failed"
+            and (
+                "cannot connect to ollama" in err_text
+                or "connection attempts failed" in err_text
+                or "connection refused" in err_text
+                or "ollama request failed" in err_text
+            )
+        )
+        if ollama_unreachable and not self.settings.notify_telegram_on_ollama_unreachable:
             return
 
         if not should_send_notification(

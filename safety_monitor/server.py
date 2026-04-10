@@ -11,6 +11,7 @@ from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 
 from safety_monitor.capture import start_local_cameras
 from safety_monitor.config import Settings
+from safety_monitor.ollama_process import ensure_ollama_running
 from safety_monitor.pipeline import SafetyPipeline
 
 
@@ -25,6 +26,7 @@ def _check_ingest_auth(request: Request, secret: str) -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = Settings.load()
+    await ensure_ollama_running(settings)
     pipeline = SafetyPipeline(settings)
     await pipeline.start()
     app.state.settings = settings

@@ -1,5 +1,6 @@
-# Raspberry Pi: safety_pi_sender.py (capture + JPEG; pip wheel is usually GUI-less)
-# Live preview: see safety_monitor/README.md — use apt python3-opencv + venv --system-site-packages
+# Raspberry Pi OS: safety_pi_sender.py — USB camera via OpenCV (V4L2)
+# Live preview: sudo apt install python3-opencv + venv --system-site-packages (see safety_monitor/README.md)
+# CSI ribbon camera: pip install picamera2, run with --picamera2
 opencv-python-headless>=4.8.0
 httpx>=0.24.0
 python-dotenv>=1.0.0

@@ -46,6 +46,12 @@ class Settings:
     ollama_model: str = ""
     ollama_timeout_sec: float = 120.0
     ollama_think: bool = False
+    # If True and OLLAMA_BASE_URL is localhost, run `ollama serve` when API is down
+    auto_start_ollama: bool = True
+    ollama_start_wait_sec: int = 90
+    # Print each assistant reply (or error) to the server terminal
+    print_ollama_response: bool = True
+    ollama_log_max_chars: int = 8000
 
     # Image → model
     max_image_side: int = 896
@@ -66,6 +72,9 @@ class Settings:
     notify_on_safe: bool = False
     notify_on_warning: bool = True
     notify_on_critical: bool = True
+    # If True, send Telegram/webhook when Ollama cannot be reached (connection errors).
+    # If False (default), those failures are only written to JSONL — avoids alert spam while Ollama is off.
+    notify_telegram_on_ollama_unreachable: bool = False
     webhook_url: str = ""
 
     # Decision / debounce
@@ -138,6 +147,22 @@ class Settings:
                 "OLLAMA_TIMEOUT_SEC", float(y("ollama_timeout_sec", 120.0))
             ),
             ollama_think=_env_bool("SAFETY_OLLAMA_THINK", bool(y("ollama_think", False))),
+            auto_start_ollama=_env_bool(
+                "SAFETY_AUTO_START_OLLAMA",
+                bool(y("auto_start_ollama", True)),
+            ),
+            ollama_start_wait_sec=_env_int(
+                "SAFETY_OLLAMA_START_WAIT_SEC",
+                int(y("ollama_start_wait_sec", 90)),
+            ),
+            print_ollama_response=_env_bool(
+                "SAFETY_PRINT_OLLAMA_RESPONSE",
+                bool(y("print_ollama_response", True)),
+            ),
+            ollama_log_max_chars=_env_int(
+                "SAFETY_OLLAMA_LOG_MAX_CHARS",
+                int(y("ollama_log_max_chars", 8000)),
+            ),
             max_image_side=_env_int("SAFETY_MAX_IMAGE_SIDE", int(y("max_image_side", 896))),
             jpeg_quality=_env_int("SAFETY_JPEG_QUALITY", int(y("jpeg_quality", 85))),
             memory_max_entries=_env_int(
@@ -171,6 +196,10 @@ class Settings:
             ),
             notify_on_critical=_env_bool(
                 "NOTIFY_ON_CRITICAL", bool(y("notify_on_critical", True))
+            ),
+            notify_telegram_on_ollama_unreachable=_env_bool(
+                "SAFETY_NOTIFY_TELEGRAM_ON_OLLAMA_DOWN",
+                bool(y("notify_telegram_on_ollama_unreachable", False)),
             ),
             webhook_url=os.getenv("SAFETY_WEBHOOK_URL", y("webhook_url", "")),
             warning_debounce_sec=_env_float(

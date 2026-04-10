@@ -12,7 +12,7 @@ The Pi is intentionally **thin**: it only captures video and uploads JPEGs. It d
 
 | Role | Machine | Responsibilities |
 |------|---------|------------------|
-| **Uploader** | Raspberry Pi (or any client) | `OpenCV` capture → JPEG → `POST /safety/ingest` |
+| **Uploader** | Raspberry Pi running **Raspberry Pi OS** (or any client) | `OpenCV` capture → JPEG → `POST /safety/ingest` |
 | **Brain** | PC | Ingest HTTP, static-scene gate, Ollama VLM, rules, logs, Telegram |
 
 Ollama should listen on the **same PC** as the safety server (typically `http://127.0.0.1:11434`) so inference stays local and uses the GPU.
@@ -30,17 +30,19 @@ Ollama should listen on the **same PC** as the safety server (typically `http://
   - or another model that supports images in `/api/chat` (check Ollama docs for your chosen model)
 - Optional: USB webcam if you use **local** capture on the PC (`SAFETY_LOCAL_CAMERA_INDICES`)
 
-### Raspberry Pi
+### Raspberry Pi (Raspberry Pi OS)
 
-- Python 3
-- Camera accessible to OpenCV (USB or Pi camera module, as you already use for other scripts)
+These steps assume **Raspberry Pi OS** (Desktop or Lite; 64-bit Bookworm is typical). Other distros on Pi may work but paths (e.g. `apt` packages) can differ.
+
+- Python 3 (`python3` / venv)
+- USB webcam **or** official Camera Module — see [§6](#6-raspberry-pi-install-and-run-the-uploader) for which stack to use
 - Network route to the PC (same LAN is typical)
 
 ---
 
 ## 1. Install Ollama and a vision model (PC)
 
-1. Install Ollama from the official site and start it (usually runs as a service).
+1. Install Ollama from the official site. With **`SAFETY_AUTO_START_OLLAMA=1`** (default) and **`OLLAMA_BASE_URL`** pointing at `127.0.0.1` or `localhost`, the safety server runs **`ollama serve`** in the background if the API is not already up. Set **`SAFETY_AUTO_START_OLLAMA=0`** if you only use the Ollama app/service and do not want a second process.
 2. Pull a model, e.g.:
    ```bash
    ollama pull llava
@@ -139,6 +141,8 @@ curl http://127.0.0.1:8766/safety/health
 
 You should see `ollama_reachable`, `model_configured`, and `telegram_configured` reflecting your `.env`.
 
+With **`SAFETY_PRINT_OLLAMA_RESPONSE=1`** (default), each Ollama assistant reply (or connection/parse error text) is printed to the **uvicorn terminal**, truncated by `SAFETY_OLLAMA_LOG_MAX_CHARS`. Set **`SAFETY_PRINT_OLLAMA_RESPONSE=0`** to turn that off.
+
 ### Alternative: Uvicorn directly
 
 ```bash
@@ -148,6 +152,12 @@ uvicorn safety_monitor.server:app --host 0.0.0.0 --port 8766
 ---
 
 ## 6. Raspberry Pi: install and run the uploader
+
+Instructions below target **Raspberry Pi OS** (`apt`, V4L2 USB stack, optional `python3-opencv` from Raspberry Pi / Debian repos).
+
+**USB webcam (default):** `safety_pi_sender.py` uses **OpenCV** `VideoCapture` on Raspberry Pi OS with the **V4L2** backend by default (standard for USB cameras). Use `--camera 0` (or `1`, …) if the wrong device opens.
+
+**Official CSI / ribbon camera:** install `picamera2` and run with **`--picamera2`** or set **`SAFETY_PI_USE_PICAMERA2=1`**. Do **not** use that for a USB camera.
 
 On the Pi, copy the repo (or at least `safety_pi_sender.py` and `requirements_safety_pi.txt`), then:
 
@@ -161,22 +171,25 @@ Set environment variables (or use a `.env` in the working directory if you insta
 |----------|---------|---------|
 | `SAFETY_PC_BASE_URL` | `http://192.168.1.50:8766` | PC safety server URL (no trailing slash) |
 | `SAFETY_CAMERA_ID` | `pi_cam` | Logical name on the PC (multi-camera) |
+| `CAMERA_INDEX` | `0` | USB camera device index for OpenCV |
 | `SAFETY_UPLOAD_INTERVAL_SEC` | `7.5` | Seconds between uploads |
 | `SAFETY_INGEST_TOKEN` | same as PC `SAFETY_INGEST_SECRET` | If PC uses ingest secret |
+| `SAFETY_PI_CAP_BACKEND` | `v4l2` (default on Raspberry Pi OS) | USB: V4L2; set `any` if you need the default OpenCV backend |
+| `SAFETY_PI_USE_PICAMERA2` | `0` (default) | Set `1` only for **CSI** camera (or use `--picamera2`) |
 
-Run:
+Run (USB example):
 
 ```bash
-python safety_pi_sender.py --server http://YOUR_PC_IP:8766 --camera-id pi_cam
+python safety_pi_sender.py --server http://YOUR_PC_IP:8766 --camera-id pi_cam --camera 0
 ```
 
 Useful flags: `--camera 0`, `--width 640`, `--height 480`, `--jpeg-quality 80`, `--interval 7.5`, `--timeout 15`, `--token <secret>`.
 
-The script **tries** to open a live preview (`Esc` to quit). **Pip’s OpenCV on Raspberry Pi is usually built without GTK/Qt**, so `cv2.namedWindow` / `imshow` fails with *“The function is not implemented”* — the sender **catches that** and keeps uploading without a window. To force no window: `--no-preview` or `HEADLESS=1`.
+The script **tries** to open a live OpenCV preview (`Esc` to quit) when not `--no-preview` / `HEADLESS`. **Pip’s `opencv-python-headless` has no GUI**, so `imshow` may fail; uploads still work. For a **visible USB feed**, use **`python3-opencv` from apt** with a venv **`--system-site-packages`** (see below). To force no window: `--no-preview` or `HEADLESS=1`.
 
-### Live preview on Raspberry Pi (real `imshow`)
+### Live preview on Raspberry Pi OS (real `imshow`)
 
-Use the **Debian/Raspberry Pi OS** OpenCV package (linked against GTK), and let your venv see it:
+Use the **`python3-opencv`** package from **apt** on Raspberry Pi OS (GTK-linked build), and let your venv see it:
 
 ```bash
 sudo apt update
@@ -281,9 +294,11 @@ Set `SAFETY_WEBHOOK_URL` to receive a POST (JSON body, or multipart with `image`
 | Symptom | What to check |
 |---------|----------------|
 | `ollama_reachable: false` | Ollama running? Firewall? `OLLAMA_BASE_URL` correct? |
+| Telegram: **Safety inference failed** / *All connection attempts failed* | The PC cannot open `OLLAMA_BASE_URL` (default `http://127.0.0.1:11434`). Start Ollama on the **same machine** as uvicorn, or set `OLLAMA_BASE_URL` to where Ollama actually listens. Test: `curl http://127.0.0.1:11434/api/tags`. |
 | `model_configured: false` | `SAFETY_VLM_MODEL` / `OLLAMA_VLM_MODEL` set in `.env`? |
 | Ingest 401 | `X-Safety-Token` must match `SAFETY_INGEST_SECRET`. |
 | No Telegram | `TELEGRAM_*` set? `SAFETY_DRY_RUN=0`? Severity actually warning/critical? Debounce not suppressing duplicate warnings? |
+| Ollama down but no Telegram (by design) | Default `SAFETY_NOTIFY_TELEGRAM_ON_OLLAMA_DOWN=0` skips Telegram for “can’t reach Ollama” errors (still logged to JSONL). Set to `1` if you want those alerts. |
 | Parse / inference errors | Logs in JSONL; try a smaller `SAFETY_MAX_IMAGE_SIDE` or a different VLM; ensure the model supports images. |
 | Pi upload failures | PC IP/port, firewall on PC for 8766, `SAFETY_HTTP_TIMEOUT`, Wi‑Fi stability. |
 
@@ -295,6 +310,7 @@ Set `SAFETY_WEBHOOK_URL` to receive a POST (JSON body, or multipart with `image`
 |------|------|
 | `safety_monitor/` | FastAPI app, pipeline, Ollama client, memory, decision, notifiers |
 | `safety_monitor/server.py` | HTTP routes |
+| `safety_monitor/ollama_process.py` | Optional `ollama serve` on startup (local URL only) |
 | `safety_monitor/main.py` | `python -m safety_monitor.main` entry |
 | `safety_pi_sender.py` | Pi uploader script (repo root) |
 | `requirements_safety.txt` | PC dependencies |

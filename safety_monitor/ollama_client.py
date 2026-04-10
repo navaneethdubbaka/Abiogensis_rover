@@ -93,7 +93,18 @@ async def run_safety_inference(
     except httpx.HTTPStatusError as e:
         ms = (time.perf_counter() - t0) * 1000.0
         return None, ms, None, f"HTTP {e.response.status_code}: {e.response.text[:500]}"
-    except (httpx.RequestError, json.JSONDecodeError, KeyError) as e:
+    except httpx.ConnectError as e:
+        ms = (time.perf_counter() - t0) * 1000.0
+        msg = (
+            f"Cannot connect to Ollama at {base_url} — is Ollama running on this PC? "
+            f"({e})"
+        )
+        return None, ms, None, msg[:500]
+    except httpx.RequestError as e:
+        ms = (time.perf_counter() - t0) * 1000.0
+        msg = f"Ollama request failed ({base_url}): {e}"
+        return None, ms, None, msg[:500]
+    except (json.JSONDecodeError, KeyError) as e:
         ms = (time.perf_counter() - t0) * 1000.0
         return None, ms, None, str(e)[:500]
 
