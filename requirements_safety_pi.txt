@@ -1,5 +1,5 @@
-# Raspberry Pi: safety_pi_sender.py (live window needs GUI build)
-# Headless/SSH only: use opencv-python-headless and run with --no-preview
-opencv-python>=4.8.0
+# Raspberry Pi: safety_pi_sender.py (capture + JPEG; pip wheel is usually GUI-less)
+# Live preview: see safety_monitor/README.md — use apt python3-opencv + venv --system-site-packages
+opencv-python-headless>=4.8.0
 httpx>=0.24.0
 python-dotenv>=1.0.0

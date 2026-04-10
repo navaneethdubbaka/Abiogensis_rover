@@ -172,7 +172,25 @@ python safety_pi_sender.py --server http://YOUR_PC_IP:8766 --camera-id pi_cam
 
 Useful flags: `--camera 0`, `--width 640`, `--height 480`, `--jpeg-quality 80`, `--interval 7.5`, `--timeout 15`, `--token <secret>`.
 
-By default a **live preview window** opens (`Esc` to quit). For SSH without a display, use `--no-preview` or set `HEADLESS=1`. The Pi requirements use **`opencv-python`** (not headless) so `imshow` works on a desktop Pi; for a headless install use `opencv-python-headless` plus `--no-preview`.
+The script **tries** to open a live preview (`Esc` to quit). **Pip’s OpenCV on Raspberry Pi is usually built without GTK/Qt**, so `cv2.namedWindow` / `imshow` fails with *“The function is not implemented”* — the sender **catches that** and keeps uploading without a window. To force no window: `--no-preview` or `HEADLESS=1`.
+
+### Live preview on Raspberry Pi (real `imshow`)
+
+Use the **Debian/Raspberry Pi OS** OpenCV package (linked against GTK), and let your venv see it:
+
+```bash
+sudo apt update
+sudo apt install python3-opencv
+cd ~/your-project
+python3 -m venv venv --system-site-packages
+source venv/bin/activate
+pip install httpx python-dotenv
+python safety_pi_sender.py --server http://YOUR_PC_IP:8766
+```
+
+Do **not** `pip install opencv-python` in that venv if you want the system GUI build (it can override `cv2` with a headless wheel). If you already installed a pip OpenCV, run `pip uninstall opencv-python opencv-python-headless` inside the venv, then rely on `python3-opencv` via `--system-site-packages`.
+
+Alternatively run **without** a preview: keep `requirements_safety_pi.txt` (headless) and use `--no-preview`.
 
 ---
 

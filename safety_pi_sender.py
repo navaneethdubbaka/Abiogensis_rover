@@ -7,14 +7,17 @@ Or:   python safety_pi_sender.py --server http://PC_LAN_IP:8766
 
 PC must be running: python -m safety_monitor.main
 
-Shows a live camera window by default (Esc to exit). Use --no-preview or HEADLESS=1
-without a display. Requires opencv-python (GUI); use opencv-python-headless + --no-preview on headless Pi.
+Shows a live camera window when OpenCV was built with GUI support (Esc to exit).
+On Raspberry Pi, pip's opencv-python is often **headless** (no imshow): the script
+detects that and continues without a window unless you use system OpenCV (see README).
+Use --no-preview or HEADLESS=1 to skip the window on purpose.
 """
 
 from __future__ import annotations
 
 import argparse
 import os
+import sys
 import time
 
 import cv2
@@ -74,7 +77,8 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    preview = not args.no_preview and not _env_bool("HEADLESS", False)
+    preview_wanted = not args.no_preview and not _env_bool("HEADLESS", False)
+    preview = False
 
     url = f"{args.server}/safety/ingest"
     headers = {}
@@ -91,8 +95,19 @@ def main() -> None:
 
     grab_flush = max(0, int(os.getenv("CAMERA_GRAB_FLUSH", "1")))
     win = "Safety Pi camera"
-    if preview:
-        cv2.namedWindow(win, cv2.WINDOW_NORMAL)
+    if preview_wanted:
+        try:
+            cv2.namedWindow(win, cv2.WINDOW_NORMAL)
+            preview = True
+        except cv2.error:
+            print(
+                "[safety_pi_sender] OpenCV has no GUI (common on Raspberry Pi with pip wheels). "
+                "Running without preview. For a live window: install Raspberry Pi OS desktop packages, "
+                "then e.g.  sudo apt install python3-opencv  and use a venv with "
+                "--system-site-packages, or see safety_monitor/README.md (Pi preview). "
+                "Otherwise use --no-preview.",
+                file=sys.stderr,
+            )
 
     def draw_overlay(display, status: str) -> None:
         cv2.putText(
@@ -145,12 +160,19 @@ def main() -> None:
                     print(f"[safety_pi_sender] upload failed: {e}")
                     time.sleep(min(5.0, interval))
                 if preview:
-                    vis = frame.copy()
-                    draw_overlay(vis, upload_status)
-                    cv2.imshow(win, vis)
-                    key = cv2.waitKey(1) & 0xFF
-                    if key == 27:
-                        break
+                    try:
+                        vis = frame.copy()
+                        draw_overlay(vis, upload_status)
+                        cv2.imshow(win, vis)
+                        key = cv2.waitKey(1) & 0xFF
+                        if key == 27:
+                            break
+                    except cv2.error:
+                        print(
+                            "[safety_pi_sender] imshow failed; disabling preview.",
+                            file=sys.stderr,
+                        )
+                        preview = False
                 elapsed = time.monotonic() - t0
                 sleep_for = max(0.0, interval - elapsed)
                 if sleep_for > 0:
